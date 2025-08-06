@@ -27,7 +27,7 @@ app = FastAPI(title="MCP Client Web API", version="1.0.0")
 # Enable CORS for React frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],  # Vite dev server
+    allow_origins=["http://localhost:3000", "http://localhost:5173", "http://localhost:5174", "http://localhost:5175"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -42,6 +42,8 @@ class MCPWebClient:
         self.anthropic = Anthropic()
         self.connected = False
         self.tools = []
+        # Store conversation history per client
+        self.conversations: Dict[str, list] = {}
         
     async def connect_to_server(self, server_script_path: str):
         """Connect to an MCP server"""
@@ -101,9 +103,217 @@ class MCPWebClient:
         except Exception as e:
             return {"status": "error", "message": str(e)}
 
+    async def process_query_streaming(self, query: str, websocket_manager, client_id: str):
+        """Process a query with streaming response and proper conversation continuity"""
+        print(f"[DEBUG] Processing streaming query: {query}")
+        
+        if not self.connected:
+            print("[DEBUG] Not connected to MCP server")
+            await websocket_manager.send_personal_message({
+                "type": "error",
+                "message": "Not connected to MCP server"
+            }, client_id)
+            return
+            
+        try:
+            # Get or initialize conversation history for this client
+            if client_id not in self.conversations:
+                self.conversations[client_id] = []
+            
+            # Add user message to conversation history
+            self.conversations[client_id].append({"role": "user", "content": query})
+            messages = self.conversations[client_id].copy()
+            
+            # Add system message at the beginning if this is the first message
+            if len(messages) == 1:
+                system_message = {
+                    "role": "system", 
+                    "content": "You are a helpful assistant with access to worldbuilding tools. You maintain conversation history and can remember what was discussed in this session. You have access to tools for creating worlds, taxonomies, entries, and more through the MCP (Model Context Protocol) interface."
+                }
+                messages.insert(0, system_message)
+            
+            print(f"[DEBUG] Conversation history has {len(messages)} messages")
+            print(f"[DEBUG] Starting streaming processing with {len(self.tools)} tools available")
+
+            max_iterations = 10
+            for iteration in range(max_iterations):
+                print(f"[DEBUG] Iteration {iteration + 1}")
+                
+                # Call Claude with streaming enabled and latest model
+                print("[DEBUG] Calling Claude with streaming...")
+                print(f"[DEBUG] Using model: {os.getenv('ANTHROPIC_MODEL', 'claude-sonnet-4-20250514')}")
+                print(f"[DEBUG] Messages to send: {len(messages)} messages")
+                
+                # Signal start of streaming
+                await websocket_manager.send_personal_message({
+                    "type": "stream_start"
+                }, client_id)
+
+                # Track the complete response as it streams
+                assistant_content_blocks = []
+                current_text_block = None
+                current_tool_block = None
+                has_tool_calls = False
+
+                # Process streaming events using the correct SDK pattern
+                print("[DEBUG] ===== STARTING STREAM EVENT PROCESSING =====")
+                event_count = 0
+                
+                with self.anthropic.messages.stream(
+                    model=os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-20250514"),
+                    max_tokens=2000,
+                    messages=messages,
+                    tools=self.tools,
+                ) as stream:
+                    # Stream text content with smoother chunking
+                    for text in stream.text_stream:
+                        print(f"[DEBUG] Streaming text: '{text}'")
+                        
+                        # Break large chunks into smaller pieces for smoother streaming
+                        if len(text) > 5:  # If chunk is larger than 5 characters
+                            # Split into smaller chunks (words or smaller pieces)
+                            words = text.split(' ')
+                            for i, word in enumerate(words):
+                                chunk = word
+                                if i < len(words) - 1:  # Add space back except for last word
+                                    chunk += ' '
+                                
+                                # Send smaller chunk to frontend
+                                await websocket_manager.send_personal_message({
+                                    "type": "text_delta",
+                                    "text": chunk
+                                }, client_id)
+                                
+                                # Small delay for smoother streaming effect
+                                await asyncio.sleep(0.02)  # 20ms delay between words
+                        else:
+                            # Send small chunks as-is
+                            await websocket_manager.send_personal_message({
+                                "type": "text_delta",
+                                "text": text
+                            }, client_id)
+                            
+                            # Yield control to allow WebSocket to send immediately
+                            await asyncio.sleep(0)
+                    
+                    # Get the final message to check for tool calls
+                    final_message = stream.get_final_message()
+                    print(f"[DEBUG] Final message received with {len(final_message.content)} content blocks")
+                    
+                    # Process the final message content
+                    for content_block in final_message.content:
+                        if content_block.type == "text":
+                            assistant_content_blocks.append({
+                                "type": "text",
+                                "text": content_block.text
+                            })
+                        elif content_block.type == "tool_use":
+                            assistant_content_blocks.append({
+                                "type": "tool_use",
+                                "id": content_block.id,
+                                "name": content_block.name,
+                                "input": content_block.input
+                            })
+                            has_tool_calls = True
+                            print(f"[DEBUG] Tool call detected: {content_block.name}")
+                
+                # Signal end of streaming
+                await websocket_manager.send_personal_message({
+                    "type": "stream_end"
+                }, client_id)
+
+                # Add assistant message to conversation history
+                if assistant_content_blocks:
+                    assistant_message = {"role": "assistant", "content": assistant_content_blocks}
+                    messages.append(assistant_message)
+                    self.conversations[client_id].append(assistant_message)
+
+                # Process any tool calls
+                if has_tool_calls:
+                    print(f"[DEBUG] Processing {len([b for b in assistant_content_blocks if b.get('type') == 'tool_use'])} tool calls")
+                    
+                    tool_results = []
+                    for content_block in assistant_content_blocks:
+                        if content_block.get("type") == "tool_use":
+                            tool_name = content_block["name"]
+                            tool_args = content_block["input"]
+                            tool_id = content_block["id"]
+                            
+                            print(f"[DEBUG] Executing tool: {tool_name} with args: {tool_args}")
+
+                            # Notify frontend of tool execution
+                            await websocket_manager.send_personal_message({
+                                "type": "tool_execution",
+                                "tool": tool_name
+                            }, client_id)
+
+                            try:
+                                result = await self.session.call_tool(tool_name, tool_args)
+                                print(f"[DEBUG] Tool result: {result}")
+                                
+                                # Notify frontend of successful tool execution
+                                await websocket_manager.send_personal_message({
+                                    "type": "tool_result",
+                                    "tool": tool_name,
+                                    "success": True
+                                }, client_id)
+                                
+                                tool_results.append({
+                                    "type": "tool_result",
+                                    "tool_use_id": tool_id,
+                                    "content": result.content
+                                })
+                                
+                            except Exception as e:
+                                print(f"[DEBUG] Tool execution error: {e}")
+                                
+                                # Notify frontend of tool execution error
+                                await websocket_manager.send_personal_message({
+                                    "type": "tool_result",
+                                    "tool": tool_name,
+                                    "success": False,
+                                    "error": str(e)
+                                }, client_id)
+                                
+                                tool_results.append({
+                                    "type": "tool_result",
+                                    "tool_use_id": tool_id,
+                                    "content": f"Error: {str(e)}"
+                                })
+
+                    # Add tool results to conversation
+                    if tool_results:
+                        tool_result_message = {"role": "user", "content": tool_results}
+                        messages.append(tool_result_message)
+                        self.conversations[client_id].append(tool_result_message)
+                        
+                        # Continue the conversation with tool results
+                        continue
+                
+                # If no tool calls were made, we're done
+                print("[DEBUG] No more tool calls, conversation complete")
+                break
+
+            # Send completion signal
+            await websocket_manager.send_personal_message({
+                "type": "conversation_complete"
+            }, client_id)
+            
+            print(f"[DEBUG] Streaming processing completed after {iteration + 1} iterations")
+            print(f"[DEBUG] Final conversation history has {len(self.conversations[client_id])} messages")
+            
+        except Exception as e:
+            print(f"[DEBUG] Exception in process_query_streaming: {e}")
+            import traceback
+            traceback.print_exc()
+            await websocket_manager.send_personal_message({
+                "type": "error",
+                "message": str(e)
+            }, client_id)
+
     async def process_query(self, query: str) -> Dict:
-        """Process a query and return structured response"""
-        print(f"[DEBUG] Processing query: {query}")
+        """Process a query and return structured response (non-streaming fallback)"""
+        print(f"[DEBUG] Processing non-streaming query: {query}")
         
         if not self.connected:
             print("[DEBUG] Not connected to MCP server")
@@ -120,11 +330,13 @@ class MCPWebClient:
             for iteration in range(max_iterations):
                 print(f"[DEBUG] Iteration {iteration + 1}")
                 
-                # Call Claude with configurable model
+                # Call Claude with latest model
                 print("[DEBUG] Calling Claude...")
+                print(f"[DEBUG] Using model: {os.getenv('ANTHROPIC_MODEL', 'claude-sonnet-4-20250514')}")
+                
                 response = self.anthropic.messages.create(
-                    model=os.getenv("ANTHROPIC_MODEL", "claude-3-5-sonnet-20241022"),
-                    max_tokens=1000,
+                    model=os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-20250514"),
+                    max_tokens=2000,
                     messages=messages,
                     tools=self.tools
                 )
@@ -213,6 +425,35 @@ class MCPWebClient:
 # Global MCP client instance
 mcp_client = MCPWebClient()
 
+# Auto-connect to worldbuilding server on startup
+@app.on_event("startup")
+async def startup_event():
+    """Connect to the worldbuilding MCP server on startup"""
+    print("[DEBUG] ===== STARTUP EVENT TRIGGERED =====")
+    
+    # Path to the worldbuilding server relative to this backend directory
+    server_path = "../../../vibe-worldbuilding-mcp/vibe_worldbuilding_server.py"
+    print(f"[DEBUG] Auto-connecting to worldbuilding server at: {server_path}")
+    
+    # Check if the file exists first
+    import os
+    backend_dir = os.path.dirname(os.path.abspath(__file__))
+    resolved_path = os.path.join(backend_dir, server_path)
+    resolved_path = os.path.normpath(resolved_path)
+    print(f"[DEBUG] Resolved server path: {resolved_path}")
+    print(f"[DEBUG] Server file exists: {os.path.exists(resolved_path)}")
+    
+    result = await mcp_client.connect_to_server(server_path)
+    print(f"[DEBUG] Connection result: {result}")
+    
+    if result.get("status") == "connected":
+        print(f"[DEBUG] ✅ Successfully connected to worldbuilding server!")
+        print(f"[DEBUG] Available tools: {result.get('tools', [])}")
+        print(f"[DEBUG] MCP client connected status: {mcp_client.connected}")
+    else:
+        print(f"[DEBUG] ❌ Failed to connect to worldbuilding server: {result.get('message', 'Unknown error')}")
+        print(f"[DEBUG] MCP client connected status: {mcp_client.connected}")
+
 # Connection manager for WebSockets
 class ConnectionManager:
     def __init__(self):
@@ -228,7 +469,16 @@ class ConnectionManager:
 
     async def send_personal_message(self, message: dict, client_id: str):
         if client_id in self.active_connections:
-            await self.active_connections[client_id].send_text(json.dumps(message))
+            try:
+                message_json = json.dumps(message)
+                print(f"[DEBUG] Sending WebSocket message to {client_id}: {message_json}")
+                await self.active_connections[client_id].send_text(message_json)
+                # Force immediate flush by yielding control
+                await asyncio.sleep(0)
+            except Exception as e:
+                print(f"[DEBUG] Error sending WebSocket message to {client_id}: {e}")
+                # Remove broken connection
+                self.disconnect(client_id)
 
 manager = ConnectionManager()
 
@@ -263,30 +513,46 @@ async def process_query(request: QueryRequest):
 # WebSocket endpoint for real-time chat
 @app.websocket("/ws/{client_id}")
 async def websocket_endpoint(websocket: WebSocket, client_id: str):
+    print(f"[DEBUG] WebSocket connection established for client: {client_id}")
     await manager.connect(websocket, client_id)
     try:
         while True:
             # Receive message from client
             data = await websocket.receive_text()
             message = json.loads(data)
+            print(f"[DEBUG] Received WebSocket message: {message}")
             
             if message["type"] == "query":
+                print(f"[DEBUG] Processing query via WebSocket: {message['query']}")
+                
                 # Send processing status
                 await manager.send_personal_message({
                     "type": "status",
                     "message": "Processing your request..."
                 }, client_id)
                 
-                # Process the query
-                result = await mcp_client.process_query(message["query"])
+                # Process the query with streaming
+                await mcp_client.process_query_streaming(message["query"], manager, client_id)
                 
-                # Send result back
+            elif message["type"] == "clear_history":
+                print(f"[DEBUG] Clearing conversation history for client: {client_id}")
+                # Clear conversation history for this client
+                if client_id in mcp_client.conversations:
+                    del mcp_client.conversations[client_id]
+                
+                # Send confirmation
                 await manager.send_personal_message({
-                    "type": "response",
-                    "data": result
+                    "type": "status",
+                    "message": "Conversation history cleared"
                 }, client_id)
                 
     except WebSocketDisconnect:
+        print(f"[DEBUG] WebSocket disconnected for client: {client_id}")
+        manager.disconnect(client_id)
+    except Exception as e:
+        print(f"[DEBUG] WebSocket error for client {client_id}: {e}")
+        import traceback
+        traceback.print_exc()
         manager.disconnect(client_id)
 
 # Serve React frontend in production

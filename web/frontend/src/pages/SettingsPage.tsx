@@ -70,15 +70,15 @@ export function SettingsPage() {
   }
 
   return (
-    <div className="max-w-4xl mx-auto">
-      <div className="text-center mb-12">
-        <h1 className="text-3xl font-bold text-gray-800 mb-2">Settings</h1>
-        <p className="text-lg text-gray-600">Configure your MCP server connection and preferences</p>
+    <div className="space-y-12">
+      <div className="text-center space-y-4">
+        <h1 className="text-4xl font-bold text-gray-900">Settings</h1>
+        <p className="text-xl text-gray-600">Configure your MCP server connection and preferences</p>
       </div>
 
       <div className="flex flex-col gap-8">
-        <div className="bg-white rounded-2xl p-8 shadow-md border border-gray-200">
-          <h2 className="text-2xl font-semibold text-gray-800 mb-6">Server Connection</h2>
+        <div className="bg-white rounded-2xl p-8 shadow-sm border border-gray-200">
+          <h2 className="text-2xl font-semibold text-gray-900 mb-6">Server Connection</h2>
           
           <div className="mb-8">
             <div className={`flex items-center gap-3 font-medium p-4 rounded-lg ${
@@ -97,8 +97,8 @@ export function SettingsPage() {
           </div>
 
           <form onSubmit={handleConnect} className="flex flex-col gap-6">
-            <div className="flex flex-col gap-2">
-              <label htmlFor="serverPath" className="font-semibold text-gray-800">MCP Server Path</label>
+            <div className="space-y-2">
+              <label htmlFor="serverPath" className="block text-sm font-medium text-gray-900">MCP Server Path</label>
               <input
                 type="text"
                 id="serverPath"
@@ -107,17 +107,17 @@ export function SettingsPage() {
                 onChange={handleInputChange}
                 placeholder="Path to your MCP server script"
                 disabled={loading}
-                className="p-3 border border-gray-200 rounded-lg text-base transition-colors duration-200 focus:outline-none focus:border-primary-500 focus:ring-3 focus:ring-primary-100 disabled:bg-gray-100 disabled:text-gray-400 disabled:cursor-not-allowed"
+                className="w-full px-4 py-3 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:bg-gray-100 disabled:text-gray-400 disabled:cursor-not-allowed"
               />
-              <div className="text-sm text-gray-600">
+              <p className="text-sm text-gray-500">
                 Enter the path to your MCP server script (e.g., server.py or server.js)
-              </div>
+              </p>
             </div>
 
             <button
               type="submit"
               disabled={loading || !form.serverPath.trim()}
-              className="bg-gradient-primary text-white border-none px-8 py-3 rounded-lg font-semibold cursor-pointer transition-all duration-200 self-start hover:not-disabled:-translate-y-0.5 hover:not-disabled:shadow-lg disabled:bg-gray-200 disabled:text-gray-400 disabled:cursor-not-allowed disabled:transform-none disabled:shadow-none"
+              className="px-6 py-3 bg-blue-600 text-white font-semibold rounded-lg hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors"
             >
               {loading ? 'Connecting...' : status.connected ? 'Reconnect' : 'Connect'}
             </button>
@@ -135,43 +135,43 @@ export function SettingsPage() {
         </div>
 
         {status.connected && status.tools.length > 0 && (
-          <div className="bg-white rounded-2xl p-8 shadow-md border border-gray-200">
-            <h2 className="text-2xl font-semibold text-gray-800 mb-6">Available Tools</h2>
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+          <div className="bg-white rounded-2xl p-8 shadow-sm border border-gray-200">
+            <h2 className="text-2xl font-semibold text-gray-900 mb-6">Available Tools</h2>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
               {status.tools.map((tool, index) => (
-                <div key={index} className="bg-gray-50 border border-gray-200 rounded-lg p-4 text-center">
-                  <div className="font-semibold text-gray-800 mb-2">{tool}</div>
-                  <div className="text-green-600 text-sm">✓ Ready</div>
+                <div key={index} className="bg-blue-50 border border-blue-200 rounded-lg p-4 text-center">
+                  <div className="font-medium text-gray-900 mb-2">{tool}</div>
+                  <div className="text-green-600 text-sm font-medium">✓ Ready</div>
                 </div>
               ))}
             </div>
           </div>
         )}
 
-        <div className="bg-white rounded-2xl p-8 shadow-md border border-gray-200">
-          <h2 className="text-2xl font-semibold text-gray-800 mb-6">Quick Start Examples</h2>
+        <div className="bg-white rounded-2xl p-8 shadow-sm border border-gray-200">
+          <h2 className="text-2xl font-semibold text-gray-900 mb-6">Quick Start Examples</h2>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            <div className="bg-gray-50 border border-gray-200 rounded-lg p-6 transition-all duration-200 hover:-translate-y-1 hover:shadow-lg">
-              <h3 className="text-lg font-semibold text-gray-800 mb-3">Worldbuilding Server</h3>
-              <code className="bg-gray-200 text-gray-700 px-2 py-1 rounded text-sm block mb-3 break-all">
+            <div className="bg-gray-50 border border-gray-200 rounded-xl p-6 hover:shadow-md transition-shadow">
+              <h3 className="text-lg font-semibold text-gray-900 mb-3">Worldbuilding Server</h3>
+              <code className="bg-gray-200 text-gray-700 px-3 py-2 rounded-lg text-sm block mb-3 break-all font-mono">
                 ../../../vibe-worldbuilding-mcp/vibe_worldbuilding_server.py
               </code>
               <p className="text-gray-600 leading-relaxed text-sm">
                 Connect to the worldbuilding MCP server for creating fantasy worlds, taxonomies, and generating static sites.
               </p>
             </div>
-            <div className="bg-gray-50 border border-gray-200 rounded-lg p-6 transition-all duration-200 hover:-translate-y-1 hover:shadow-lg">
-              <h3 className="text-lg font-semibold text-gray-800 mb-3">Local Server</h3>
-              <code className="bg-gray-200 text-gray-700 px-2 py-1 rounded text-sm block mb-3 break-all">
+            <div className="bg-gray-50 border border-gray-200 rounded-xl p-6 hover:shadow-md transition-shadow">
+              <h3 className="text-lg font-semibold text-gray-900 mb-3">Local Server</h3>
+              <code className="bg-gray-200 text-gray-700 px-3 py-2 rounded-lg text-sm block mb-3 break-all font-mono">
                 ./my-server.py
               </code>
               <p className="text-gray-600 leading-relaxed text-sm">
                 Connect to a local MCP server in the current directory.
               </p>
             </div>
-            <div className="bg-gray-50 border border-gray-200 rounded-lg p-6 transition-all duration-200 hover:-translate-y-1 hover:shadow-lg">
-              <h3 className="text-lg font-semibold text-gray-800 mb-3">Absolute Path</h3>
-              <code className="bg-gray-200 text-gray-700 px-2 py-1 rounded text-sm block mb-3 break-all">
+            <div className="bg-gray-50 border border-gray-200 rounded-xl p-6 hover:shadow-md transition-shadow">
+              <h3 className="text-lg font-semibold text-gray-900 mb-3">Absolute Path</h3>
+              <code className="bg-gray-200 text-gray-700 px-3 py-2 rounded-lg text-sm block mb-3 break-all font-mono">
                 /path/to/server.py
               </code>
               <p className="text-gray-600 leading-relaxed text-sm">
@@ -181,29 +181,35 @@ export function SettingsPage() {
           </div>
         </div>
 
-        <div className="bg-white rounded-2xl p-8 shadow-md border border-gray-200">
-          <h2 className="text-2xl font-semibold text-gray-800 mb-6">About MCP</h2>
-          <div className="bg-gray-50 border border-gray-200 rounded-lg p-6">
-            <p className="text-gray-700 leading-relaxed mb-4">
+        <div className="bg-white rounded-2xl p-8 shadow-sm border border-gray-200">
+          <h2 className="text-2xl font-semibold text-gray-900 mb-6">About MCP</h2>
+          <div className="bg-gray-50 border border-gray-200 rounded-xl p-6">
+            <p className="text-gray-700 leading-relaxed mb-6">
               The Model Context Protocol (MCP) enables AI assistants to securely connect to external tools and data sources. 
               This web interface provides a modern way to interact with MCP servers through natural language.
             </p>
-            <div className="flex flex-wrap gap-4">
+            <div className="flex flex-wrap gap-3">
               <a 
                 href="https://modelcontextprotocol.io" 
                 target="_blank" 
                 rel="noopener noreferrer"
-                className="text-primary-500 no-underline font-medium px-4 py-2 border border-primary-500 rounded transition-all duration-200 hover:bg-primary-500 hover:text-white hover:-translate-y-0.5"
+                className="inline-flex items-center px-4 py-2 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 transition-colors"
               >
                 Learn more about MCP
+                <svg className="w-4 h-4 ml-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                </svg>
               </a>
               <a 
                 href="https://github.com/modelcontextprotocol" 
                 target="_blank" 
                 rel="noopener noreferrer"
-                className="text-primary-500 no-underline font-medium px-4 py-2 border border-primary-500 rounded transition-all duration-200 hover:bg-primary-500 hover:text-white hover:-translate-y-0.5"
+                className="inline-flex items-center px-4 py-2 bg-white text-gray-700 font-medium rounded-lg border border-gray-300 hover:bg-gray-50 transition-colors"
               >
                 View on GitHub
+                <svg className="w-4 h-4 ml-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                </svg>
               </a>
             </div>
           </div>
