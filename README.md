@@ -31,7 +31,14 @@ ANTHROPIC_API_KEY=your_api_key_here
 
 ## Usage
 
-Run the client with a path to your MCP server script:
+**First, activate the virtual environment:**
+```bash
+source venv/bin/activate
+# OR use the convenience script:
+source activate.sh
+```
+
+**Then run the client with a path to your MCP server script:**
 
 ```bash
 python client.py /path/to/your/server.py
@@ -46,8 +53,18 @@ The client will:
 ## Example
 
 ```bash
+# Activate environment and run with worldbuilding server
+source venv/bin/activate
 python client.py ../vibe-worldbuilding-mcp/vibe_worldbuilding_server.py
 ```
+
+**Available tools in worldbuilding server:**
+- `instantiate_world` - Create a new world
+- `create_taxonomy` - Add taxonomy categories  
+- `create_world_entry` - Add entries to your world
+- `generate_entry_descriptions` - Generate content with AI
+- `analyze_world_consistency` - Check for consistency issues
+- `build_static_site` - Generate a website for your world
 
 ## Requirements
 
