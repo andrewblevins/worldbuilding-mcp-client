@@ -1,0 +1,7 @@
+In the world of Lepidoptera Society, sentient caterpillars and butterflies coexist in a deeply stratified social system. The society is built upon a brutal caste hierarchy where butterflies reign as divine beings, while caterpillars are treated as untouchables, forced to live in the lowest stratum of society.
+
+The butterflies, with their vibrant wings and ability to soar through the skies, have established themselves as a ruling class that claims divine right to power. They live in elevated cities built among the highest branches and flowers, looking down upon the world below both literally and figuratively. Their transformation from caterpillar to butterfly is viewed not merely as a biological process, but as a sacred ascension that proves their divine worth.
+
+Meanwhile, the caterpillars are confined to the ground and lower vegetation, treated as perpetually unclean and unworthy. Despite being the literal younger form of butterflies, they are seen as a separate and inferior caste. Most caterpillars live their entire lives in this state, as the ruling butterfly class has created various social and physical barriers to prevent or delay metamorphosis among the lower classes.
+
+This society is rife with tension, prejudice, and complex social dynamics, where the dream of transformation holds both spiritual and political significance. The system is maintained through a combination of religious doctrine, social conditioning, and physical oppression, though whispers of resistance occasionally emerge from the darkest corners of the undergrowth.

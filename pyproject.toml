@@ -1,0 +1,11 @@
+[project]
+name = "worldbuilding-mcp-client"
+version = "0.1.0"
+description = "A Python MCP client for interacting with worldbuilding MCP servers"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "anthropic>=0.61.0",
+    "mcp>=1.12.3",
+    "python-dotenv>=1.1.1",
+]
