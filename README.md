@@ -1,83 +1,162 @@
 # Worldbuilding MCP Client
 
-A Python client for interacting with Model Context Protocol (MCP) servers, specifically designed for worldbuilding applications. This client provides an interactive interface to connect to MCP servers and process queries using Claude AI.
+A comprehensive client suite for interacting with the Vibe Worldbuilding MCP server. Create detailed fictional worlds through natural language conversations with Claude AI.
 
-## Features
+## 🌟 Features
 
-- Connect to MCP servers via stdio transport
-- Interactive chat interface for querying worldbuilding data
-- Integration with Claude AI for natural language processing
-- Support for tool calling and result processing
-- Automatic dependency management
+- **🌐 Modern Web Interface** - React + Tailwind CSS frontend with real-time chat
+- **🤖 Natural Language Worldbuilding** - Talk to Claude to create worlds, characters, locations
+- **⚡ Real-time Communication** - WebSocket-based chat with live tool execution
+- **🔧 Tool Discovery** - Automatically discovers and uses MCP server tools
+- **📱 Mobile Responsive** - Works great on desktop and mobile devices
+- **🏗️ CLI Client** - Command-line interface for advanced users
 
-## Installation
+## 🚀 Quick Start (Web Interface)
 
-1. Clone the repository:
-```bash
-git clone https://github.com/andrewblevins/worldbuilding-mcp-client.git
-cd worldbuilding-mcp-client
-```
-
-2. Install dependencies:
-```bash
-pip install -e .
-```
-
-3. Set up environment variables:
-Create a `.env` file with your Anthropic API key:
-```
-ANTHROPIC_API_KEY=your_api_key_here
-```
-
-## Usage
-
-**First, activate the virtual environment:**
-```bash
-source venv/bin/activate
-# OR use the convenience script:
-source activate.sh
-```
-
-**Then run the client with a path to your MCP server script:**
-
-```bash
-python client.py /path/to/your/server.py
-```
-
-The client will:
-1. Connect to the specified MCP server
-2. List available tools
-3. Start an interactive chat loop
-4. Process your queries using Claude AI and available tools
-
-## Example
-
-```bash
-# Activate environment and run with worldbuilding server
-source venv/bin/activate
-python client.py ../vibe-worldbuilding-mcp/vibe_worldbuilding_server.py
-```
-
-**Available tools in worldbuilding server:**
-- `instantiate_world` - Create a new world
-- `create_taxonomy` - Add taxonomy categories  
-- `create_world_entry` - Add entries to your world
-- `generate_entry_descriptions` - Generate content with AI
-- `analyze_world_consistency` - Check for consistency issues
-- `build_static_site` - Generate a website for your world
-
-## Requirements
-
-- Python 3.12+
+### Prerequisites
+- Node.js 18+ and npm
+- Python 3.8+
 - Anthropic API key
-- MCP server to connect to
 
-## Dependencies
+### 1. Setup
+```bash
+cd worldbuilding-mcp-client/web
+./setup.sh
+```
 
-- `anthropic>=0.61.0` - Claude AI client
-- `mcp>=1.12.3` - Model Context Protocol
-- `python-dotenv>=1.1.1` - Environment variable management
+### 2. Configure API Key
+```bash
+# Edit backend/.env and add your Anthropic API key
+echo "ANTHROPIC_API_KEY=your_api_key_here" > backend/.env
+```
 
-## License
+### 3. Start the Application
+```bash
+# Terminal 1: Start backend
+cd backend
+source venv/bin/activate
+python main.py
 
-MIT License
+# Terminal 2: Start frontend
+cd frontend
+npm run dev
+```
+
+### 4. Open in Browser
+- Frontend: http://localhost:5173
+- Backend API: http://localhost:8000
+
+## 📁 Project Structure
+
+```
+worldbuilding-mcp-client/
+├── web/                          # Modern web interface (PRIMARY)
+│   ├── frontend/                 # React + Tailwind frontend
+│   ├── backend/                  # FastAPI backend with WebSocket
+│   ├── setup.sh                  # Automated setup script
+│   └── README.md                 # Web client documentation
+├── cli/                          # Command-line interface
+│   ├── client.py                 # Python CLI client
+│   ├── run_client.sh            # CLI runner script
+│   └── ...
+├── generated-worlds/             # Example generated worlds
+│   ├── context-appreciation-society-20250731/
+│   └── lepidoptera-society-20250806-091601/
+├── docs/                         # Project documentation
+│   └── context-appreciation-society/
+├── archive/                      # Archived/incomplete projects
+└── README.md                     # This file
+```
+
+## 🎯 Usage Examples
+
+### Web Interface
+1. **Connect to MCP Server**
+   - Go to Settings page
+   - Enter path: `../vibe-worldbuilding-mcp/vibe_worldbuilding_server.py`
+   - Click "Connect"
+
+2. **Create a World**
+   - Navigate to Chat page
+   - Type: "Create a fantasy world about floating islands"
+   - Watch Claude orchestrate tool calls automatically
+
+3. **Explore Generated Content**
+   - Generated worlds appear in `generated-worlds/`
+   - Each world includes entries, images, and a navigable website
+
+### CLI Interface
+```bash
+cd cli
+source activate.sh
+python client.py ../../vibe-worldbuilding-mcp/vibe_worldbuilding_server.py
+```
+
+## 🛠️ Available MCP Tools
+
+When connected to the Vibe Worldbuilding MCP server:
+
+- **`instantiate_world`** - Create a new world with theme and structure
+- **`create_taxonomy`** - Add taxonomy categories (characters, locations, etc.)
+- **`create_world_entry`** - Add detailed entries to your world
+- **`generate_entry_descriptions`** - Generate rich content with AI
+- **`analyze_world_consistency`** - Check for consistency issues
+- **`build_static_site`** - Generate a navigable website for your world
+
+## 🔧 Development
+
+### Web Client Development
+```bash
+cd web/frontend
+npm run dev     # Start dev server with hot reload
+npm run build   # Build for production
+```
+
+### Backend Development
+```bash
+cd web/backend
+source venv/bin/activate
+python main.py  # Auto-reloads on file changes
+```
+
+## 📚 Documentation
+
+- **[Web Client Guide](web/README.md)** - Detailed web interface documentation
+- **[CLI Client Guide](cli/EXPLANATION.md)** - Command-line interface guide
+- **[Generated Worlds](generated-worlds/)** - Example worlds and their structure
+
+## 🌍 Example Worlds
+
+Explore the `generated-worlds/` directory to see examples of what the system can create:
+
+- **Context Appreciation Society** - A philosophical society exploring context and meaning
+- **Lepidoptera Society** - A world centered around butterfly-inspired culture
+
+Each generated world includes:
+- Rich lore and world overview
+- Detailed character and location entries
+- AI-generated images
+- Navigable static website
+- Organized taxonomy structure
+
+## 🤝 Contributing
+
+1. Fork the repository
+2. Create a feature branch
+3. Make your changes
+4. Test with both web and CLI clients
+5. Submit a pull request
+
+## 📄 License
+
+MIT License - see LICENSE file for details.
+
+## 🔗 Related Projects
+
+- **[Vibe Worldbuilding MCP](../vibe-worldbuilding-mcp/)** - The MCP server that powers this client
+- **[MCP Specification](https://modelcontextprotocol.io)** - Model Context Protocol documentation
+- **[Anthropic Claude API](https://docs.anthropic.com)** - AI model powering the worldbuilding
+
+---
+
+**🎯 Focus: Web Interface MVP** - The web interface in `web/` is the primary client and recommended starting point.
