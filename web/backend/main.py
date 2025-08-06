@@ -66,11 +66,28 @@ class MCPWebClient:
             if not os.path.exists(resolved_path):
                 raise FileNotFoundError(f"Server script not found: {resolved_path}")
 
+            # Set up environment with proper working directory for world creation
+            backend_dir = os.path.dirname(os.path.abspath(__file__))
+            project_root = os.path.join(backend_dir, "..", "..")  # Go up to worldbuilding-mcp-client
+            generated_worlds_dir = os.path.join(project_root, "generated-worlds")
+            generated_worlds_dir = os.path.normpath(generated_worlds_dir)
+            
+            # Ensure the generated-worlds directory exists
+            os.makedirs(generated_worlds_dir, exist_ok=True)
+            
+            # Set environment variable for the MCP server to use
+            env = os.environ.copy()
+            env["WORLDBUILDING_BASE_DIR"] = generated_worlds_dir
+            
+            # Debug: Print environment variable being set
+            print(f"[DEBUG] Setting WORLDBUILDING_BASE_DIR to: {generated_worlds_dir}")
+            print(f"[DEBUG] Environment variable set in subprocess env: {env.get('WORLDBUILDING_BASE_DIR')}")
+            
             command = "python" if is_python else "node"
             server_params = StdioServerParameters(
                 command=command,
                 args=[resolved_path],
-                env=None
+                env=env
             )
 
             stdio_transport = await self.exit_stack.enter_async_context(
@@ -94,6 +111,9 @@ class MCPWebClient:
                 for tool in response.tools
             ]
             self.connected = True
+            
+            # Store the generated worlds directory for use in tool calls
+            self.generated_worlds_dir = generated_worlds_dir
             
             return {
                 "status": "connected",
@@ -124,16 +144,25 @@ class MCPWebClient:
             self.conversations[client_id].append({"role": "user", "content": query})
             messages = self.conversations[client_id].copy()
             
-            # Add system message at the beginning if this is the first message
-            if len(messages) == 1:
-                system_message = {
-                    "role": "system", 
-                    "content": "You are a helpful assistant with access to worldbuilding tools. You maintain conversation history and can remember what was discussed in this session. You have access to tools for creating worlds, taxonomies, entries, and more through the MCP (Model Context Protocol) interface."
-                }
-                messages.insert(0, system_message)
+            # System message for first interaction (passed separately to Anthropic API)
+            system_prompt = "You are a helpful assistant with access to worldbuilding tools. You maintain conversation history and can remember what was discussed in this session. You have access to tools for creating worlds, taxonomies, entries, and more through the MCP (Model Context Protocol) interface."
             
-            print(f"[DEBUG] Conversation history has {len(messages)} messages")
-            print(f"[DEBUG] Starting streaming processing with {len(self.tools)} tools available")
+            print(f"[CLAUDE DEBUG] ===== CONVERSATION STATE =====")
+            print(f"[CLAUDE DEBUG] Client ID: {client_id}")
+            print(f"[CLAUDE DEBUG] Query: {query}")
+            print(f"[CLAUDE DEBUG] Conversation history has {len(messages)} messages")
+            print(f"[CLAUDE DEBUG] Available tools: {len(self.tools)}")
+            for i, msg in enumerate(messages):
+                print(f"[CLAUDE DEBUG] Message {i}: role={msg['role']}, content_type={type(msg['content'])}")
+                if isinstance(msg['content'], str):
+                    print(f"[CLAUDE DEBUG]   Content preview: {msg['content'][:100]}...")
+                elif isinstance(msg['content'], list):
+                    print(f"[CLAUDE DEBUG]   Content blocks: {len(msg['content'])}")
+                    for j, block in enumerate(msg['content']):
+                        if isinstance(block, dict):
+                            print(f"[CLAUDE DEBUG]     Block {j}: type={block.get('type', 'unknown')}")
+            print(f"[CLAUDE DEBUG] System prompt: {system_prompt[:100]}...")
+            print(f"[CLAUDE DEBUG] ===== STARTING CLAUDE API CALL =====")
 
             max_iterations = 10
             for iteration in range(max_iterations):
@@ -161,9 +190,10 @@ class MCPWebClient:
                 
                 with self.anthropic.messages.stream(
                     model=os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-20250514"),
-                    max_tokens=2000,
+                    max_tokens=4000,
                     messages=messages,
                     tools=self.tools,
+                    system=system_prompt,
                 ) as stream:
                     # Stream text content with smoother chunking
                     for text in stream.text_stream:
@@ -198,16 +228,28 @@ class MCPWebClient:
                     
                     # Get the final message to check for tool calls
                     final_message = stream.get_final_message()
-                    print(f"[DEBUG] Final message received with {len(final_message.content)} content blocks")
+                    print(f"[CLAUDE DEBUG] ===== CLAUDE RESPONSE RECEIVED =====")
+                    print(f"[CLAUDE DEBUG] Final message received with {len(final_message.content)} content blocks")
+                    print(f"[CLAUDE DEBUG] Message ID: {final_message.id}")
+                    print(f"[CLAUDE DEBUG] Model: {final_message.model}")
+                    print(f"[CLAUDE DEBUG] Role: {final_message.role}")
+                    print(f"[CLAUDE DEBUG] Usage: {final_message.usage}")
                     
                     # Process the final message content
-                    for content_block in final_message.content:
+                    for i, content_block in enumerate(final_message.content):
+                        print(f"[CLAUDE DEBUG] Content block {i}: type={content_block.type}")
+                        
                         if content_block.type == "text":
+                            print(f"[CLAUDE DEBUG]   Text content length: {len(content_block.text)}")
+                            print(f"[CLAUDE DEBUG]   Text preview: {content_block.text[:200]}...")
                             assistant_content_blocks.append({
                                 "type": "text",
                                 "text": content_block.text
                             })
                         elif content_block.type == "tool_use":
+                            print(f"[CLAUDE DEBUG]   Tool call: {content_block.name}")
+                            print(f"[CLAUDE DEBUG]   Tool ID: {content_block.id}")
+                            print(f"[CLAUDE DEBUG]   Tool args: {content_block.input}")
                             assistant_content_blocks.append({
                                 "type": "tool_use",
                                 "id": content_block.id,
@@ -215,7 +257,9 @@ class MCPWebClient:
                                 "input": content_block.input
                             })
                             has_tool_calls = True
-                            print(f"[DEBUG] Tool call detected: {content_block.name}")
+                    
+                    print(f"[CLAUDE DEBUG] Has tool calls: {has_tool_calls}")
+                    print(f"[CLAUDE DEBUG] ===== END CLAUDE RESPONSE =====")
                 
                 # Signal end of streaming
                 await websocket_manager.send_personal_message({
@@ -241,22 +285,64 @@ class MCPWebClient:
                             
                             print(f"[DEBUG] Executing tool: {tool_name} with args: {tool_args}")
 
-                            # Notify frontend of tool execution
+                            # Stream tool execution announcement to chat
                             await websocket_manager.send_personal_message({
-                                "type": "tool_execution",
-                                "tool": tool_name
+                                "type": "text_delta",
+                                "text": f"\n\n🔧 **Executing tool: {tool_name}**\n"
                             }, client_id)
+                            
+                            # Stream tool parameters (formatted nicely)
+                            if tool_args:
+                                params_text = "Parameters:\n"
+                                for key, value in tool_args.items():
+                                    if isinstance(value, str) and len(value) > 100:
+                                        # Truncate long values
+                                        params_text += f"  • {key}: {value[:100]}...\n"
+                                    elif isinstance(value, list) and len(value) > 3:
+                                        # Truncate long lists
+                                        params_text += f"  • {key}: [{', '.join(str(v) for v in value[:3])}, ...]\n"
+                                    else:
+                                        params_text += f"  • {key}: {value}\n"
+                                
+                                await websocket_manager.send_personal_message({
+                                    "type": "text_delta",
+                                    "text": params_text
+                                }, client_id)
 
                             try:
-                                result = await self.session.call_tool(tool_name, tool_args)
+                                # Stream execution status
+                                await websocket_manager.send_personal_message({
+                                    "type": "text_delta",
+                                    "text": "⏳ Executing...\n"
+                                }, client_id)
+                                
+                                # Add timeout for tool execution (60 seconds)
+                                result = await asyncio.wait_for(
+                                    self.session.call_tool(tool_name, tool_args),
+                                    timeout=60.0
+                                )
                                 print(f"[DEBUG] Tool result: {result}")
                                 
-                                # Notify frontend of successful tool execution
+                                # Stream successful result
                                 await websocket_manager.send_personal_message({
-                                    "type": "tool_result",
-                                    "tool": tool_name,
-                                    "success": True
+                                    "type": "text_delta",
+                                    "text": "✅ **Tool completed successfully!**\n"
                                 }, client_id)
+                                
+                                # Stream the actual tool result content
+                                if result.content:
+                                    result_text = ""
+                                    for content_item in result.content:
+                                        if hasattr(content_item, 'text'):
+                                            result_text += content_item.text
+                                        else:
+                                            result_text += str(content_item)
+                                    
+                                    # Format the result nicely
+                                    await websocket_manager.send_personal_message({
+                                        "type": "text_delta",
+                                        "text": f"**Result:**\n{result_text}\n"
+                                    }, client_id)
                                 
                                 tool_results.append({
                                     "type": "tool_result",
@@ -264,15 +350,28 @@ class MCPWebClient:
                                     "content": result.content
                                 })
                                 
+                            except asyncio.TimeoutError:
+                                print(f"[DEBUG] Tool execution timeout: {tool_name}")
+                                
+                                # Stream timeout error
+                                await websocket_manager.send_personal_message({
+                                    "type": "text_delta",
+                                    "text": "⏰ **Tool execution timed out after 60 seconds**\n"
+                                }, client_id)
+                                
+                                tool_results.append({
+                                    "type": "tool_result",
+                                    "tool_use_id": tool_id,
+                                    "content": "Error: Tool execution timed out after 60 seconds. The tool may be taking too long to generate content."
+                                })
+                                
                             except Exception as e:
                                 print(f"[DEBUG] Tool execution error: {e}")
                                 
-                                # Notify frontend of tool execution error
+                                # Stream execution error
                                 await websocket_manager.send_personal_message({
-                                    "type": "tool_result",
-                                    "tool": tool_name,
-                                    "success": False,
-                                    "error": str(e)
+                                    "type": "text_delta",
+                                    "text": f"❌ **Tool execution failed:**\n{str(e)}\n"
                                 }, client_id)
                                 
                                 tool_results.append({
@@ -294,10 +393,8 @@ class MCPWebClient:
                 print("[DEBUG] No more tool calls, conversation complete")
                 break
 
-            # Send completion signal
-            await websocket_manager.send_personal_message({
-                "type": "conversation_complete"
-            }, client_id)
+            # Conversation complete - no need to send confusing completion signal
+            # The streaming end signal already indicates completion
             
             print(f"[DEBUG] Streaming processing completed after {iteration + 1} iterations")
             print(f"[DEBUG] Final conversation history has {len(self.conversations[client_id])} messages")
@@ -525,11 +622,8 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
             if message["type"] == "query":
                 print(f"[DEBUG] Processing query via WebSocket: {message['query']}")
                 
-                # Send processing status
-                await manager.send_personal_message({
-                    "type": "status",
-                    "message": "Processing your request..."
-                }, client_id)
+                # Processing status removed to reduce interface clutter
+                # The streaming indicator will show processing state
                 
                 # Process the query with streaming
                 await mcp_client.process_query_streaming(message["query"], manager, client_id)
