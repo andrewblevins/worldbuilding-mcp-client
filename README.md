@@ -18,6 +18,35 @@ A comprehensive client suite for interacting with the Vibe Worldbuilding MCP ser
 - Python 3.8+
 - Anthropic API key
 
+### 🎯 **NEW: Super Easy Development Script**
+
+We now have a comprehensive development script that handles everything for you!
+
+```bash
+# One-time setup (installs all dependencies)
+./dev.sh setup
+
+# Configure your API key
+echo "ANTHROPIC_API_KEY=your_api_key_here" > web/backend/.env
+
+# Start both servers with one command
+./dev.sh start
+
+# Open in browser
+./dev.sh open
+```
+
+**Available Commands:**
+- `./dev.sh setup` - Install all dependencies
+- `./dev.sh start` - Start both backend and frontend
+- `./dev.sh stop` - Stop all servers
+- `./dev.sh restart` - Quick restart (great for development)
+- `./dev.sh status` - Check server status
+- `./dev.sh logs backend` - View backend logs
+- `./dev.sh open` - Open app in browser
+
+### Manual Setup (Alternative)
+
 ### 1. Setup
 ```bash
 cd worldbuilding-mcp-client/web
