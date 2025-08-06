@@ -1,4 +1,5 @@
 import asyncio
+import os
 import sys
 from typing import Optional
 from contextlib import AsyncExitStack
@@ -69,7 +70,7 @@ class MCPClient:
         for iteration in range(max_iterations):
             # Call Claude
             response = self.anthropic.messages.create(
-                model="claude-3-5-sonnet-20241022",
+                model=os.getenv("ANTHROPIC_MODEL", "claude-4-sonnet"),
                 max_tokens=1000,
                 messages=messages,
                 tools=available_tools
