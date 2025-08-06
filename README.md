@@ -14,7 +14,7 @@ A Python client for interacting with Model Context Protocol (MCP) servers, speci
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/yourusername/worldbuilding-mcp-client.git
+git clone https://github.com/andrewblevins/worldbuilding-mcp-client.git
 cd worldbuilding-mcp-client
 ```
 
