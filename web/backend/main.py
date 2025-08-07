@@ -99,6 +99,12 @@ class ServerConnection:
                 if "env" in server_config:
                     env.update(server_config["env"])
                 
+                # Ensure generated-worlds directory exists for filesystem server
+                if self.name == "filesystem" and args:
+                    # Extract the directory path from args (last argument is typically the path)
+                    filesystem_path = args[-1]
+                    os.makedirs(filesystem_path, exist_ok=True)
+                
                 server_params = StdioServerParameters(
                     command=command,
                     args=args,
@@ -170,7 +176,7 @@ class MCPMultiServerClient:
             },
             "filesystem": {
                 "command": "npx",
-                "args": ["-y", "@modelcontextprotocol/server-filesystem", "/Users/andrew/worldbuilding"],
+                "args": ["-y", "@modelcontextprotocol/server-filesystem", "/Users/andrew/worldbuilding/worldbuilding-mcp-client/generated-worlds"],
                 "env": {}
             }
         }
@@ -391,17 +397,30 @@ class MCPMultiServerClient:
 
                             try:
                                 # Execute tool on the appropriate server
+                                print(f"[DEBUG] About to call tool {tool_name} on server {server_name}")
                                 result = await self.call_tool(tool_name, tool_args)
-                                print(f"[DEBUG] Tool result from {server_name}: {result}")
+                                print(f"[DEBUG] Tool call completed, processing result...")
+                                print(f"[DEBUG] Raw result type: {type(result)}")
+                                print(f"[DEBUG] Raw result: {result}")
                                 
                                 # Get result text for explicit message
                                 result_text = ""
-                                if result.content:
-                                    for content_item in result.content:
+                                print(f"[DEBUG] Checking result.content...")
+                                if hasattr(result, 'content') and result.content:
+                                    print(f"[DEBUG] result.content exists, type: {type(result.content)}, length: {len(result.content) if hasattr(result.content, '__len__') else 'unknown'}")
+                                    for i, content_item in enumerate(result.content):
+                                        print(f"[DEBUG] Processing content item {i}: type={type(content_item)}")
                                         if hasattr(content_item, 'text'):
+                                            print(f"[DEBUG] Content item has text attribute: {content_item.text[:100]}...")
                                             result_text += content_item.text
                                         else:
+                                            print(f"[DEBUG] Content item has no text attribute, converting to string")
                                             result_text += str(content_item)
+                                else:
+                                    print(f"[DEBUG] No result.content or result.content is empty")
+                                    result_text = str(result)
+                                
+                                print(f"[DEBUG] Final result_text length: {len(result_text)}")
                                 
                                 # Send explicit tool result message
                                 await websocket_manager.send_personal_message({
