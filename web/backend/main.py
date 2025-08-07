@@ -1,13 +1,14 @@
 """
 FastAPI backend for the MCP Client Web Interface.
 Wraps the existing MCP client and provides WebSocket and REST APIs.
+Multi-server support for connecting to multiple MCP servers simultaneously.
 """
 
 import asyncio
 import json
 import os
 import uuid
-from typing import Dict, Optional
+from typing import Dict, Optional, List, Any
 from contextlib import AsyncExitStack
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
@@ -33,63 +34,80 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-class MCPWebClient:
-    """Web-adapted version of the MCP client"""
+class ServerConnection:
+    """Represents a connection to a single MCP server"""
     
-    def __init__(self):
+    def __init__(self, name: str):
+        self.name = name
         self.session: Optional[ClientSession] = None
         self.exit_stack = AsyncExitStack()
-        self.anthropic = Anthropic()
         self.connected = False
         self.tools = []
-        # Store conversation history per client
-        self.conversations: Dict[str, list] = {}
+        self.stdio = None
+        self.write = None
         
-    async def connect_to_server(self, server_script_path: str):
-        """Connect to an MCP server"""
+    async def connect(self, server_config: dict):
+        """Connect to the MCP server with the given configuration"""
         try:
-            is_python = server_script_path.endswith('.py')
-            is_js = server_script_path.endswith('.js')
-            if not (is_python or is_js):
-                raise ValueError("Server script must be a .py or .js file")
+            # Handle different server types
+            if "script_path" in server_config:
+                # Python/JS script server
+                script_path = server_config["script_path"]
+                is_python = script_path.endswith('.py')
+                is_js = script_path.endswith('.js')
+                
+                if not (is_python or is_js):
+                    raise ValueError("Server script must be a .py or .js file")
 
-            # Resolve the path relative to the backend directory
-            if not os.path.isabs(server_script_path):
-                # Get the directory where this script is located
-                backend_dir = os.path.dirname(os.path.abspath(__file__))
-                resolved_path = os.path.join(backend_dir, server_script_path)
-                resolved_path = os.path.normpath(resolved_path)
+                # Resolve the path relative to the backend directory
+                if not os.path.isabs(script_path):
+                    backend_dir = os.path.dirname(os.path.abspath(__file__))
+                    resolved_path = os.path.join(backend_dir, script_path)
+                    resolved_path = os.path.normpath(resolved_path)
+                else:
+                    resolved_path = script_path
+                
+                if not os.path.exists(resolved_path):
+                    raise FileNotFoundError(f"Server script not found: {resolved_path}")
+
+                # Set up environment
+                env = os.environ.copy()
+                if "env" in server_config:
+                    env.update(server_config["env"])
+                
+                # Add worldbuilding base directory for worldbuilding server
+                if self.name == "worldbuilding":
+                    backend_dir = os.path.dirname(os.path.abspath(__file__))
+                    project_root = os.path.join(backend_dir, "..", "..")
+                    generated_worlds_dir = os.path.join(project_root, "generated-worlds")
+                    generated_worlds_dir = os.path.normpath(generated_worlds_dir)
+                    os.makedirs(generated_worlds_dir, exist_ok=True)
+                    env["WORLDBUILDING_BASE_DIR"] = generated_worlds_dir
+                
+                command = "python" if is_python else "node"
+                server_params = StdioServerParameters(
+                    command=command,
+                    args=[resolved_path],
+                    env=env
+                )
+                
+            elif "command" in server_config:
+                # Command-based server (like npx filesystem server)
+                command = server_config["command"]
+                args = server_config.get("args", [])
+                env = os.environ.copy()
+                if "env" in server_config:
+                    env.update(server_config["env"])
+                
+                server_params = StdioServerParameters(
+                    command=command,
+                    args=args,
+                    env=env
+                )
             else:
-                resolved_path = server_script_path
-            
-            # Check if the file exists
-            if not os.path.exists(resolved_path):
-                raise FileNotFoundError(f"Server script not found: {resolved_path}")
+                raise ValueError("Server config must have either 'script_path' or 'command'")
 
-            # Set up environment with proper working directory for world creation
-            backend_dir = os.path.dirname(os.path.abspath(__file__))
-            project_root = os.path.join(backend_dir, "..", "..")  # Go up to worldbuilding-mcp-client
-            generated_worlds_dir = os.path.join(project_root, "generated-worlds")
-            generated_worlds_dir = os.path.normpath(generated_worlds_dir)
-            
-            # Ensure the generated-worlds directory exists
-            os.makedirs(generated_worlds_dir, exist_ok=True)
-            
-            # Set environment variable for the MCP server to use
-            env = os.environ.copy()
-            env["WORLDBUILDING_BASE_DIR"] = generated_worlds_dir
-            
-            # Debug: Print environment variable being set
-            print(f"[DEBUG] Setting WORLDBUILDING_BASE_DIR to: {generated_worlds_dir}")
-            print(f"[DEBUG] Environment variable set in subprocess env: {env.get('WORLDBUILDING_BASE_DIR')}")
-            
-            command = "python" if is_python else "node"
-            server_params = StdioServerParameters(
-                command=command,
-                args=[resolved_path],
-                env=env
-            )
-
+            # Create connection
             stdio_transport = await self.exit_stack.enter_async_context(
                 stdio_client(server_params)
             )
@@ -112,26 +130,152 @@ class MCPWebClient:
             ]
             self.connected = True
             
-            # Store the generated worlds directory for use in tool calls
-            self.generated_worlds_dir = generated_worlds_dir
-            
             return {
                 "status": "connected",
+                "server": self.name,
                 "tools": [tool["name"] for tool in self.tools]
             }
             
         except Exception as e:
-            return {"status": "error", "message": str(e)}
+            return {"status": "error", "server": self.name, "message": str(e)}
+    
+    async def call_tool(self, tool_name: str, args: dict):
+        """Call a tool on this server"""
+        if not self.connected or not self.session:
+            raise Exception(f"Server {self.name} is not connected")
+        
+        return await self.session.call_tool(tool_name, args)
+    
+    async def disconnect(self):
+        """Disconnect from the server"""
+        if self.connected:
+            await self.exit_stack.aclose()
+            self.connected = False
+            self.tools = []
+
+class MCPMultiServerClient:
+    """Multi-server MCP client that can connect to multiple servers simultaneously"""
+    
+    def __init__(self):
+        self.servers: Dict[str, ServerConnection] = {}
+        self.anthropic = Anthropic()
+        # Store conversation history per client
+        self.conversations: Dict[str, list] = {}
+        
+        # Default server configurations
+        self.default_servers = {
+            "worldbuilding": {
+                "script_path": "../../../vibe-worldbuilding-mcp/vibe_worldbuilding_server.py",
+                "env": {}
+            },
+            "filesystem": {
+                "command": "npx",
+                "args": ["-y", "@modelcontextprotocol/server-filesystem", "/Users/andrew/worldbuilding"],
+                "env": {}
+            }
+        }
+    
+    async def connect_to_server(self, server_name: str, server_config: dict = None):
+        """Connect to a specific server"""
+        if server_config is None:
+            if server_name in self.default_servers:
+                server_config = self.default_servers[server_name]
+            else:
+                return {"status": "error", "message": f"No default config for server '{server_name}'"}
+        
+        # Disconnect existing connection if any
+        if server_name in self.servers:
+            await self.servers[server_name].disconnect()
+        
+        # Create new connection
+        server_conn = ServerConnection(server_name)
+        result = await server_conn.connect(server_config)
+        
+        if result["status"] == "connected":
+            self.servers[server_name] = server_conn
+        
+        return result
+    
+    async def connect_to_all_default_servers(self):
+        """Connect to all default servers"""
+        results = {}
+        for server_name in self.default_servers:
+            result = await self.connect_to_server(server_name)
+            results[server_name] = result
+        return results
+    
+    async def disconnect_server(self, server_name: str):
+        """Disconnect from a specific server"""
+        if server_name in self.servers:
+            await self.servers[server_name].disconnect()
+            del self.servers[server_name]
+            return {"status": "disconnected", "server": server_name}
+        return {"status": "error", "message": f"Server '{server_name}' not connected"}
+    
+    def get_all_tools(self):
+        """Get all tools from all connected servers"""
+        all_tools = []
+        for server_name, server_conn in self.servers.items():
+            if server_conn.connected:
+                all_tools.extend(server_conn.tools)
+        return all_tools
+    
+    def find_tool_server(self, tool_name: str) -> Optional[str]:
+        """Find which server has the specified tool"""
+        for server_name, server_conn in self.servers.items():
+            if server_conn.connected:
+                for tool in server_conn.tools:
+                    if tool["name"] == tool_name:
+                        return server_name
+        return None
+    
+    async def call_tool(self, tool_name: str, args: dict):
+        """Call a tool, automatically routing to the correct server"""
+        server_name = self.find_tool_server(tool_name)
+        if not server_name:
+            raise Exception(f"Tool '{tool_name}' not found on any connected server")
+        
+        return await self.servers[server_name].call_tool(tool_name, args)
+    
+    def get_status(self):
+        """Get status of all servers"""
+        status = {
+            "servers": {},
+            "total_tools": 0,
+            "connected_servers": 0
+        }
+        
+        for server_name, server_conn in self.servers.items():
+            status["servers"][server_name] = {
+                "connected": server_conn.connected,
+                "tools": [tool["name"] for tool in server_conn.tools]
+            }
+            if server_conn.connected:
+                status["connected_servers"] += 1
+                status["total_tools"] += len(server_conn.tools)
+        
+        return status
+
+    async def stream_text_char_by_char(self, text: str, websocket_manager, client_id: str):
+        """Helper function to stream text character by character"""
+        for char in text:
+            await websocket_manager.send_personal_message({
+                "type": "text_delta",
+                "text": char
+            }, client_id)
+            await asyncio.sleep(0.01)  # 10ms delay between characters
 
     async def process_query_streaming(self, query: str, websocket_manager, client_id: str):
         """Process a query with streaming response and proper conversation continuity"""
         print(f"[DEBUG] Processing streaming query: {query}")
         
-        if not self.connected:
-            print("[DEBUG] Not connected to MCP server")
+        # Check if any servers are connected
+        connected_servers = [name for name, server in self.servers.items() if server.connected]
+        if not connected_servers:
+            print("[DEBUG] No MCP servers connected")
             await websocket_manager.send_personal_message({
                 "type": "error",
-                "message": "Not connected to MCP server"
+                "message": "No MCP servers connected"
             }, client_id)
             return
             
@@ -144,34 +288,22 @@ class MCPWebClient:
             self.conversations[client_id].append({"role": "user", "content": query})
             messages = self.conversations[client_id].copy()
             
-            # System message for first interaction (passed separately to Anthropic API)
-            system_prompt = "You are a helpful assistant with access to worldbuilding tools. You maintain conversation history and can remember what was discussed in this session. You have access to tools for creating worlds, taxonomies, entries, and more through the MCP (Model Context Protocol) interface."
+            # Get all available tools
+            all_tools = self.get_all_tools()
+            
+            # System message for first interaction
+            system_prompt = f"You are a helpful assistant with access to tools from multiple MCP servers. You maintain conversation history and can remember what was discussed in this session. You have access to {len(all_tools)} tools from {len(connected_servers)} connected servers: {', '.join(connected_servers)}. The tools include worldbuilding capabilities and filesystem operations."
             
             print(f"[CLAUDE DEBUG] ===== CONVERSATION STATE =====")
             print(f"[CLAUDE DEBUG] Client ID: {client_id}")
             print(f"[CLAUDE DEBUG] Query: {query}")
+            print(f"[CLAUDE DEBUG] Connected servers: {connected_servers}")
+            print(f"[CLAUDE DEBUG] Available tools: {len(all_tools)}")
             print(f"[CLAUDE DEBUG] Conversation history has {len(messages)} messages")
-            print(f"[CLAUDE DEBUG] Available tools: {len(self.tools)}")
-            for i, msg in enumerate(messages):
-                print(f"[CLAUDE DEBUG] Message {i}: role={msg['role']}, content_type={type(msg['content'])}")
-                if isinstance(msg['content'], str):
-                    print(f"[CLAUDE DEBUG]   Content preview: {msg['content'][:100]}...")
-                elif isinstance(msg['content'], list):
-                    print(f"[CLAUDE DEBUG]   Content blocks: {len(msg['content'])}")
-                    for j, block in enumerate(msg['content']):
-                        if isinstance(block, dict):
-                            print(f"[CLAUDE DEBUG]     Block {j}: type={block.get('type', 'unknown')}")
-            print(f"[CLAUDE DEBUG] System prompt: {system_prompt[:100]}...")
-            print(f"[CLAUDE DEBUG] ===== STARTING CLAUDE API CALL =====")
 
             max_iterations = 10
             for iteration in range(max_iterations):
                 print(f"[DEBUG] Iteration {iteration + 1}")
-                
-                # Call Claude with streaming enabled and latest model
-                print("[DEBUG] Calling Claude with streaming...")
-                print(f"[DEBUG] Using model: {os.getenv('ANTHROPIC_MODEL', 'claude-sonnet-4-20250514')}")
-                print(f"[DEBUG] Messages to send: {len(messages)} messages")
                 
                 # Signal start of streaming
                 await websocket_manager.send_personal_message({
@@ -180,76 +312,40 @@ class MCPWebClient:
 
                 # Track the complete response as it streams
                 assistant_content_blocks = []
-                current_text_block = None
-                current_tool_block = None
                 has_tool_calls = False
 
-                # Process streaming events using the correct SDK pattern
                 print("[DEBUG] ===== STARTING STREAM EVENT PROCESSING =====")
-                event_count = 0
                 
                 with self.anthropic.messages.stream(
                     model=os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-20250514"),
                     max_tokens=4000,
                     messages=messages,
-                    tools=self.tools,
+                    tools=all_tools,
                     system=system_prompt,
                 ) as stream:
-                    # Stream text content with smoother chunking
+                    # Stream text content character by character
                     for text in stream.text_stream:
-                        print(f"[DEBUG] Streaming text: '{text}'")
-                        
-                        # Break large chunks into smaller pieces for smoother streaming
-                        if len(text) > 5:  # If chunk is larger than 5 characters
-                            # Split into smaller chunks (words or smaller pieces)
-                            words = text.split(' ')
-                            for i, word in enumerate(words):
-                                chunk = word
-                                if i < len(words) - 1:  # Add space back except for last word
-                                    chunk += ' '
-                                
-                                # Send smaller chunk to frontend
-                                await websocket_manager.send_personal_message({
-                                    "type": "text_delta",
-                                    "text": chunk
-                                }, client_id)
-                                
-                                # Small delay for smoother streaming effect
-                                await asyncio.sleep(0.02)  # 20ms delay between words
-                        else:
-                            # Send small chunks as-is
+                        # Stream each character individually for letter-by-letter effect
+                        for char in text:
                             await websocket_manager.send_personal_message({
                                 "type": "text_delta",
-                                "text": text
+                                "text": char
                             }, client_id)
-                            
-                            # Yield control to allow WebSocket to send immediately
-                            await asyncio.sleep(0)
+                            await asyncio.sleep(0.01)  # 10ms delay between characters
                     
                     # Get the final message to check for tool calls
                     final_message = stream.get_final_message()
-                    print(f"[CLAUDE DEBUG] ===== CLAUDE RESPONSE RECEIVED =====")
                     print(f"[CLAUDE DEBUG] Final message received with {len(final_message.content)} content blocks")
-                    print(f"[CLAUDE DEBUG] Message ID: {final_message.id}")
-                    print(f"[CLAUDE DEBUG] Model: {final_message.model}")
-                    print(f"[CLAUDE DEBUG] Role: {final_message.role}")
-                    print(f"[CLAUDE DEBUG] Usage: {final_message.usage}")
                     
                     # Process the final message content
                     for i, content_block in enumerate(final_message.content):
-                        print(f"[CLAUDE DEBUG] Content block {i}: type={content_block.type}")
-                        
                         if content_block.type == "text":
-                            print(f"[CLAUDE DEBUG]   Text content length: {len(content_block.text)}")
-                            print(f"[CLAUDE DEBUG]   Text preview: {content_block.text[:200]}...")
                             assistant_content_blocks.append({
                                 "type": "text",
                                 "text": content_block.text
                             })
                         elif content_block.type == "tool_use":
-                            print(f"[CLAUDE DEBUG]   Tool call: {content_block.name}")
-                            print(f"[CLAUDE DEBUG]   Tool ID: {content_block.id}")
-                            print(f"[CLAUDE DEBUG]   Tool args: {content_block.input}")
+                            print(f"[CLAUDE DEBUG] Tool call: {content_block.name}")
                             assistant_content_blocks.append({
                                 "type": "tool_use",
                                 "id": content_block.id,
@@ -257,15 +353,7 @@ class MCPWebClient:
                                 "input": content_block.input
                             })
                             has_tool_calls = True
-                    
-                    print(f"[CLAUDE DEBUG] Has tool calls: {has_tool_calls}")
-                    print(f"[CLAUDE DEBUG] ===== END CLAUDE RESPONSE =====")
                 
-                # Signal end of streaming
-                await websocket_manager.send_personal_message({
-                    "type": "stream_end"
-                }, client_id)
-
                 # Add assistant message to conversation history
                 if assistant_content_blocks:
                     assistant_message = {"role": "assistant", "content": assistant_content_blocks}
@@ -276,6 +364,11 @@ class MCPWebClient:
                 if has_tool_calls:
                     print(f"[DEBUG] Processing {len([b for b in assistant_content_blocks if b.get('type') == 'tool_use'])} tool calls")
                     
+                    # Ensure streaming continues for tool execution
+                    await websocket_manager.send_personal_message({
+                        "type": "stream_start"
+                    }, client_id)
+                    
                     tool_results = []
                     for content_block in assistant_content_blocks:
                         if content_block.get("type") == "tool_use":
@@ -285,64 +378,46 @@ class MCPWebClient:
                             
                             print(f"[DEBUG] Executing tool: {tool_name} with args: {tool_args}")
 
-                            # Stream tool execution announcement to chat
-                            await websocket_manager.send_personal_message({
-                                "type": "text_delta",
-                                "text": f"\n\n🔧 **Executing tool: {tool_name}**\n"
-                            }, client_id)
+                            # Find which server has this tool
+                            server_name = self.find_tool_server(tool_name)
                             
-                            # Stream tool parameters (formatted nicely)
-                            if tool_args:
-                                params_text = "Parameters:\n"
-                                for key, value in tool_args.items():
-                                    if isinstance(value, str) and len(value) > 100:
-                                        # Truncate long values
-                                        params_text += f"  • {key}: {value[:100]}...\n"
-                                    elif isinstance(value, list) and len(value) > 3:
-                                        # Truncate long lists
-                                        params_text += f"  • {key}: [{', '.join(str(v) for v in value[:3])}, ...]\n"
-                                    else:
-                                        params_text += f"  • {key}: {value}\n"
-                                
-                                await websocket_manager.send_personal_message({
-                                    "type": "text_delta",
-                                    "text": params_text
-                                }, client_id)
+                            # Send explicit tool execution message
+                            await websocket_manager.send_personal_message({
+                                "type": "tool_execution",
+                                "tool_name": tool_name,
+                                "tool_args": tool_args,
+                                "server": server_name
+                            }, client_id)
 
                             try:
-                                # Stream execution status
-                                await websocket_manager.send_personal_message({
-                                    "type": "text_delta",
-                                    "text": "⏳ Executing...\n"
-                                }, client_id)
+                                # Execute tool on the appropriate server
+                                result = await self.call_tool(tool_name, tool_args)
+                                print(f"[DEBUG] Tool result from {server_name}: {result}")
                                 
-                                # Add timeout for tool execution (60 seconds)
-                                result = await asyncio.wait_for(
-                                    self.session.call_tool(tool_name, tool_args),
-                                    timeout=60.0
-                                )
-                                print(f"[DEBUG] Tool result: {result}")
-                                
-                                # Stream successful result
-                                await websocket_manager.send_personal_message({
-                                    "type": "text_delta",
-                                    "text": "✅ **Tool completed successfully!**\n"
-                                }, client_id)
-                                
-                                # Stream the actual tool result content
+                                # Get result text for explicit message
+                                result_text = ""
                                 if result.content:
-                                    result_text = ""
                                     for content_item in result.content:
                                         if hasattr(content_item, 'text'):
                                             result_text += content_item.text
                                         else:
                                             result_text += str(content_item)
-                                    
-                                    # Format the result nicely
-                                    await websocket_manager.send_personal_message({
-                                        "type": "text_delta",
-                                        "text": f"**Result:**\n{result_text}\n"
-                                    }, client_id)
+                                
+                                # Send explicit tool result message
+                                await websocket_manager.send_personal_message({
+                                    "type": "tool_result",
+                                    "success": True,
+                                    "result": result_text,
+                                    "tool_name": tool_name,
+                                    "server": server_name
+                                }, client_id)
+                                
+                                # Stream successful result character by character
+                                await self.stream_text_char_by_char(f"✅ **Tool completed successfully on {server_name} server!**\n", websocket_manager, client_id)
+                                
+                                # Stream the actual tool result content character by character
+                                if result_text:
+                                    await self.stream_text_char_by_char(f"**Result:**\n{result_text}\n", websocket_manager, client_id)
                                 
                                 tool_results.append({
                                     "type": "tool_result",
@@ -350,29 +425,20 @@ class MCPWebClient:
                                     "content": result.content
                                 })
                                 
-                            except asyncio.TimeoutError:
-                                print(f"[DEBUG] Tool execution timeout: {tool_name}")
-                                
-                                # Stream timeout error
-                                await websocket_manager.send_personal_message({
-                                    "type": "text_delta",
-                                    "text": "⏰ **Tool execution timed out after 60 seconds**\n"
-                                }, client_id)
-                                
-                                tool_results.append({
-                                    "type": "tool_result",
-                                    "tool_use_id": tool_id,
-                                    "content": "Error: Tool execution timed out after 60 seconds. The tool may be taking too long to generate content."
-                                })
-                                
                             except Exception as e:
                                 print(f"[DEBUG] Tool execution error: {e}")
                                 
-                                # Stream execution error
+                                # Send explicit tool error message
                                 await websocket_manager.send_personal_message({
-                                    "type": "text_delta",
-                                    "text": f"❌ **Tool execution failed:**\n{str(e)}\n"
+                                    "type": "tool_result",
+                                    "success": False,
+                                    "error": str(e),
+                                    "tool_name": tool_name,
+                                    "server": server_name
                                 }, client_id)
+                                
+                                # Stream execution error character by character
+                                await self.stream_text_char_by_char(f"❌ **Tool execution failed on {server_name}:**\n{str(e)}\n", websocket_manager, client_id)
                                 
                                 tool_results.append({
                                     "type": "tool_result",
@@ -392,12 +458,13 @@ class MCPWebClient:
                 # If no tool calls were made, we're done
                 print("[DEBUG] No more tool calls, conversation complete")
                 break
-
-            # Conversation complete - no need to send confusing completion signal
-            # The streaming end signal already indicates completion
+            
+            # Signal end of streaming when everything is complete
+            await websocket_manager.send_personal_message({
+                "type": "stream_end"
+            }, client_id)
             
             print(f"[DEBUG] Streaming processing completed after {iteration + 1} iterations")
-            print(f"[DEBUG] Final conversation history has {len(self.conversations[client_id])} messages")
             
         except Exception as e:
             print(f"[DEBUG] Exception in process_query_streaming: {e}")
@@ -408,148 +475,43 @@ class MCPWebClient:
                 "message": str(e)
             }, client_id)
 
-    async def process_query(self, query: str) -> Dict:
-        """Process a query and return structured response (non-streaming fallback)"""
-        print(f"[DEBUG] Processing non-streaming query: {query}")
-        
-        if not self.connected:
-            print("[DEBUG] Not connected to MCP server")
-            return {"error": "Not connected to MCP server"}
-            
-        try:
-            messages = [{"role": "user", "content": query}]
-            final_text = []
-            tool_calls = []
-            max_iterations = 10
-
-            print(f"[DEBUG] Starting processing with {len(self.tools)} tools available")
-
-            for iteration in range(max_iterations):
-                print(f"[DEBUG] Iteration {iteration + 1}")
-                
-                # Call Claude with latest model
-                print("[DEBUG] Calling Claude...")
-                print(f"[DEBUG] Using model: {os.getenv('ANTHROPIC_MODEL', 'claude-sonnet-4-20250514')}")
-                
-                response = self.anthropic.messages.create(
-                    model=os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-20250514"),
-                    max_tokens=2000,
-                    messages=messages,
-                    tools=self.tools
-                )
-                print(f"[DEBUG] Claude response received with {len(response.content)} content items")
-
-                assistant_message_content = []
-                has_tool_calls = False
-
-                # Process response content
-                for i, content in enumerate(response.content):
-                    print(f"[DEBUG] Processing content item {i}: type={content.type}")
-                    
-                    if content.type == 'text':
-                        print(f"[DEBUG] Text content: {content.text[:100]}...")
-                        final_text.append(content.text)
-                        assistant_message_content.append(content)
-                    elif content.type == 'tool_use':
-                        has_tool_calls = True
-                        tool_name = content.name
-                        tool_args = content.input
-                        print(f"[DEBUG] Tool call: {tool_name} with args: {tool_args}")
-
-                        # Execute tool call
-                        try:
-                            print(f"[DEBUG] Executing tool: {tool_name}")
-                            result = await self.session.call_tool(tool_name, tool_args)
-                            print(f"[DEBUG] Tool result: {result}")
-                            
-                            tool_call_info = {
-                                "tool": tool_name,
-                                "args": tool_args,
-                                "result": result.content[0].text if result.content else "No result"
-                            }
-                            tool_calls.append(tool_call_info)
-                            
-                            assistant_message_content.append(content)
-                            
-                            # Add tool result to conversation
-                            messages.append({
-                                "role": "assistant",
-                                "content": assistant_message_content
-                            })
-                            messages.append({
-                                "role": "user",
-                                "content": [
-                                    {
-                                        "type": "tool_result",
-                                        "tool_use_id": content.id,
-                                        "content": result.content
-                                    }
-                                ]
-                            })
-                        except Exception as e:
-                            print(f"[DEBUG] Tool execution error: {e}")
-                            tool_calls.append({
-                                "tool": tool_name,
-                                "args": tool_args,
-                                "error": str(e)
-                            })
-                            break
-
-                # If no tool calls were made, we're done
-                if not has_tool_calls:
-                    print("[DEBUG] No tool calls made, finishing")
-                    break
-
-            result = {
-                "response": "\n".join(final_text),
-                "tool_calls": tool_calls,
-                "iterations": iteration + 1
-            }
-            print(f"[DEBUG] Final result: {result}")
-            return result
-            
-        except Exception as e:
-            print(f"[DEBUG] Exception in process_query: {e}")
-            import traceback
-            traceback.print_exc()
-            return {"error": str(e)}
-
     async def cleanup(self):
-        """Clean up resources"""
-        await self.exit_stack.aclose()
-        self.connected = False
+        """Clean up all server connections"""
+        for server_name in list(self.servers.keys()):
+            await self.disconnect_server(server_name)
 
-# Global MCP client instance
-mcp_client = MCPWebClient()
+# Global multi-server MCP client instance
+mcp_client = MCPMultiServerClient()
 
-# Auto-connect to worldbuilding server on startup
+# Auto-connect to default servers on startup
 @app.on_event("startup")
 async def startup_event():
-    """Connect to the worldbuilding MCP server on startup"""
+    """Connect to default MCP servers on startup"""
     print("[DEBUG] ===== STARTUP EVENT TRIGGERED =====")
     
-    # Path to the worldbuilding server relative to this backend directory
-    server_path = "../../../vibe-worldbuilding-mcp/vibe_worldbuilding_server.py"
-    print(f"[DEBUG] Auto-connecting to worldbuilding server at: {server_path}")
+    # Clean up any existing server processes first
+    import subprocess
+    try:
+        subprocess.run(["pkill", "-f", "vibe_worldbuilding_server.py"], 
+                      capture_output=True, check=False)
+        print("[DEBUG] Cleaned up any existing MCP server processes")
+    except Exception as e:
+        print(f"[DEBUG] Process cleanup warning: {e}")
     
-    # Check if the file exists first
-    import os
-    backend_dir = os.path.dirname(os.path.abspath(__file__))
-    resolved_path = os.path.join(backend_dir, server_path)
-    resolved_path = os.path.normpath(resolved_path)
-    print(f"[DEBUG] Resolved server path: {resolved_path}")
-    print(f"[DEBUG] Server file exists: {os.path.exists(resolved_path)}")
+    # Connect to all default servers
+    print("[DEBUG] Connecting to default servers...")
+    results = await mcp_client.connect_to_all_default_servers()
     
-    result = await mcp_client.connect_to_server(server_path)
-    print(f"[DEBUG] Connection result: {result}")
+    for server_name, result in results.items():
+        if result.get("status") == "connected":
+            print(f"[DEBUG] ✅ Successfully connected to {server_name} server!")
+            print(f"[DEBUG] Available tools: {result.get('tools', [])}")
+        else:
+            print(f"[DEBUG] ❌ Failed to connect to {server_name} server: {result.get('message', 'Unknown error')}")
     
-    if result.get("status") == "connected":
-        print(f"[DEBUG] ✅ Successfully connected to worldbuilding server!")
-        print(f"[DEBUG] Available tools: {result.get('tools', [])}")
-        print(f"[DEBUG] MCP client connected status: {mcp_client.connected}")
-    else:
-        print(f"[DEBUG] ❌ Failed to connect to worldbuilding server: {result.get('message', 'Unknown error')}")
-        print(f"[DEBUG] MCP client connected status: {mcp_client.connected}")
+    # Print overall status
+    status = mcp_client.get_status()
+    print(f"[DEBUG] Overall status: {status['connected_servers']}/{len(mcp_client.default_servers)} servers connected, {status['total_tools']} total tools")
 
 # Connection manager for WebSockets
 class ConnectionManager:
@@ -568,7 +530,9 @@ class ConnectionManager:
         if client_id in self.active_connections:
             try:
                 message_json = json.dumps(message)
-                print(f"[DEBUG] Sending WebSocket message to {client_id}: {message_json}")
+                # Only log non-text-delta messages to reduce spam
+                if message.get("type") != "text_delta":
+                    print(f"[DEBUG] Sending WebSocket message to {client_id}: {message_json}")
                 await self.active_connections[client_id].send_text(message_json)
                 # Force immediate flush by yielding control
                 await asyncio.sleep(0)
@@ -581,7 +545,8 @@ manager = ConnectionManager()
 
 # API Models
 class ConnectRequest(BaseModel):
-    server_path: str
+    server_name: str
+    server_config: Optional[dict] = None
 
 class QueryRequest(BaseModel):
     query: str
@@ -590,22 +555,27 @@ class QueryRequest(BaseModel):
 @app.post("/api/connect")
 async def connect_to_server(request: ConnectRequest):
     """Connect to an MCP server"""
-    result = await mcp_client.connect_to_server(request.server_path)
+    result = await mcp_client.connect_to_server(request.server_name, request.server_config)
+    return result
+
+@app.post("/api/disconnect/{server_name}")
+async def disconnect_from_server(server_name: str):
+    """Disconnect from an MCP server"""
+    result = await mcp_client.disconnect_server(server_name)
     return result
 
 @app.get("/api/status")
 async def get_status():
-    """Get connection status and available tools"""
-    return {
-        "connected": mcp_client.connected,
-        "tools": [tool["name"] for tool in mcp_client.tools] if mcp_client.connected else []
-    }
+    """Get connection status and available tools for all servers"""
+    return mcp_client.get_status()
 
-@app.post("/api/query")
-async def process_query(request: QueryRequest):
-    """Process a query through the MCP client"""
-    result = await mcp_client.process_query(request.query)
-    return result
+@app.get("/api/servers")
+async def get_servers():
+    """Get list of available server configurations"""
+    return {
+        "default_servers": list(mcp_client.default_servers.keys()),
+        "connected_servers": list(mcp_client.servers.keys())
+    }
 
 # WebSocket endpoint for real-time chat
 @app.websocket("/ws/{client_id}")
@@ -621,9 +591,6 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
             
             if message["type"] == "query":
                 print(f"[DEBUG] Processing query via WebSocket: {message['query']}")
-                
-                # Processing status removed to reduce interface clutter
-                # The streaming indicator will show processing state
                 
                 # Process the query with streaming
                 await mcp_client.process_query_streaming(message["query"], manager, client_id)
@@ -649,9 +616,27 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
         traceback.print_exc()
         manager.disconnect(client_id)
 
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Clean up MCP resources on shutdown"""
+    print("[DEBUG] ===== SHUTDOWN EVENT TRIGGERED =====")
+    
+    # Close all MCP client connections
+    await mcp_client.cleanup()
+    print("[DEBUG] Closed all MCP client connections")
+    
+    # Clean up MCP server processes
+    import subprocess
+    try:
+        subprocess.run(["pkill", "-f", "vibe_worldbuilding_server.py"], 
+                      capture_output=True, check=False)
+        print("[DEBUG] Cleaned up MCP server processes on shutdown")
+    except Exception as e:
+        print(f"[DEBUG] Shutdown cleanup warning: {e}")
+
 # Serve React frontend in production
 # app.mount("/", StaticFiles(directory="../frontend/dist", html=True), name="static")
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

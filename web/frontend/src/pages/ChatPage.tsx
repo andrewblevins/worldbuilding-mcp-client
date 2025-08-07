@@ -49,7 +49,10 @@ export function ChatPage() {
     
     websocket.onmessage = (event) => {
       const data = JSON.parse(event.data)
-      console.log('[FRONTEND DEBUG] Received WebSocket message:', data)
+      // Only log non-text-delta messages to reduce console spam
+      if (data.type !== 'text_delta') {
+        console.log('[FRONTEND DEBUG] Received WebSocket message:', data)
+      }
       
       switch (data.type) {
         case 'status':
@@ -60,17 +63,26 @@ export function ChatPage() {
           break
           
         case 'stream_start':
-          // Start a new assistant message for streaming
-          const assistantMessageId = Date.now().toString()
-          currentAssistantMessageId.current = assistantMessageId
-          const assistantMessage: Message = {
-            id: assistantMessageId,
-            type: 'assistant',
-            content: '',
-            timestamp: new Date(),
-            isStreaming: true
+          // Start a new assistant message for streaming (or continue existing one)
+          if (!currentAssistantMessageId.current) {
+            const assistantMessageId = Date.now().toString()
+            currentAssistantMessageId.current = assistantMessageId
+            const assistantMessage: Message = {
+              id: assistantMessageId,
+              type: 'assistant',
+              content: '',
+              timestamp: new Date(),
+              isStreaming: true
+            }
+            setMessages(prev => [...prev, assistantMessage])
+          } else {
+            // Continue streaming to existing message
+            setMessages(prev => prev.map(msg => 
+              msg.id === currentAssistantMessageId.current 
+                ? { ...msg, isStreaming: true }
+                : msg
+            ))
           }
-          setMessages(prev => [...prev, assistantMessage])
           setIsLoading(false)
           break
           
@@ -82,6 +94,8 @@ export function ChatPage() {
                 ? { ...msg, content: msg.content + data.text }
                 : msg
             ))
+          } else {
+            console.log('[FRONTEND DEBUG] Received text_delta but no current message ID!')
           }
           break
           
@@ -98,15 +112,38 @@ export function ChatPage() {
           break
           
         case 'tool_execution':
-          // Don't show tool execution messages - they clutter the interface
-          // The backend logs show this information for debugging
+          // Show tool execution messages in the chat
+          if (data.tool_name) {
+            if (currentAssistantMessageId.current) {
+              setMessages(prev => prev.map(msg => 
+                msg.id === currentAssistantMessageId.current 
+                  ? { ...msg, content: msg.content + `\n\n🔧 **Executing tool: ${data.tool_name}**\n` }
+                  : msg
+              ))
+            }
+          }
           break
           
         case 'tool_result':
-          // Don't show tool result messages - they clutter the interface
-          // Only show errors if they're critical
-          if (!data.success && data.error) {
-            addSystemMessage(`Error: ${data.error}`)
+          // Show tool result messages in the chat
+          if (data.success && data.result) {
+            if (currentAssistantMessageId.current) {
+              setMessages(prev => prev.map(msg => 
+                msg.id === currentAssistantMessageId.current 
+                  ? { ...msg, content: msg.content + `✅ **Tool completed successfully!**\n**Result:** ${data.result}\n` }
+                  : msg
+              ))
+            }
+          } else if (!data.success && data.error) {
+            if (currentAssistantMessageId.current) {
+              setMessages(prev => prev.map(msg => 
+                msg.id === currentAssistantMessageId.current 
+                  ? { ...msg, content: msg.content + `❌ **Tool execution failed:** ${data.error}\n` }
+                  : msg
+              ))
+            } else {
+              addSystemMessage(`Error: ${data.error}`)
+            }
           }
           break
           
